@@ -1,0 +1,14 @@
+.START
+..device	value	footprint	quantity	refdes
+CAPACITOR	100n	0603	1	C2
+CAPACITOR	1u	0805	1	C1
+cn0357	unknown	eval_cn0357-1nm	1	U1
+CONNECTOR_1	unknown	Micromatch_8way-1nm	1	J1
+EC_3E_Sensor	unknown	Membrapor_3E_32mmDiaBody_17mmPCD-1nm	1	U3
+EC_3E_Sensor	unknown	Membrapor_3E_41mmDiaBody_34p4_PCD-1nm	1	U5
+EC_3E_Sensor	unknown	MGK_3E_20p4mmDiaBody_13p5mm_PCD-1nm	1	U2
+RESISTOR	DNF	0805	1	R1
+TESTPOINT	unknown	Datumn_Small	1	G1
+TESTPOINT	unknown	Testpoint_small	1	TP1
+TPS22919	unknown	sc70_0p65mmP-1nm	1	U4
+.END

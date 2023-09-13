@@ -1,0 +1,5 @@
+..device	value	footprint	quantity	refdes
+EC_3E_Sensor	Membrapor_3E_32mmDiaBody_17mmPCD-2nm	Membrapor_3E_32mmDiaBody_17mmPCD-2nm	1	U3
+EC_3E_Sensor	Membrapor_3E_41mmDiaBody_34p4_PCD-3nm	Membrapor_3E_41mmDiaBody_34p4_PCD-3nm	1	U5
+EC_3E_Sensor	MGK_3E_20p4mmDiaBody_13p5mm_PCD-1nm	MGK_3E_20p4mmDiaBody_13p5mm_PCD-1nm	1	U2
+DNF	HOLE	M3_Drill_3p1mm	4	H1 H2 H3 H4

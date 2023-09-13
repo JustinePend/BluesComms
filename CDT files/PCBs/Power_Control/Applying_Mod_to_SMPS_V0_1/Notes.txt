@@ -1,0 +1,18 @@
+
+M:\Printed Electronics\Gas Sensors\Prototypes\CDT8Ch_Prototype_V1_0\Images
+
+7425-7433: Detailed images of Power Shutdown Controller Board, Board Assembly, Mod Wires on SMPS board.
+
+7434 - 7440: Process of extracting and refitting the SMPS board from the kit without needing to remove the other boards.
+
+M:\Printed Electronics\Gas Sensors\Prototypes\CDT8Ch_Prototype_V1_0\Electronic\PCBs\Power_Control\Applying_Mod_to_SMPS_V0_1
+
+7466: Bag of parts and PCBs. Sufficient to populate 5x more PCBs (potentially for units 1-5)
+
+M:\Printed Electronics\Gas Sensors\Prototypes\CDT8Ch_Prototype_V1_0\Electronic\EE_Sandbox_Files\NM_EE_Sandbox_Transfer_28Oct20\Power_Controller
+Source code that runs on PIC XLP uC. IDE: MPLABX. 
+
+7463: Pencil Notes regarding modification added on schematic. R5-S : R5 south pad. North is top when board name is orientated reading left to right.
+
+7456: Large image of boards with mod areas highlighted. 
+

@@ -1,0 +1,6 @@
+..device	value	footprint	quantity	refdes
+CONNECTOR_2	Elysium_30P_Female-1nm	Elysium_30P_Female-1nm	1	J2
+CONNECTOR_2	Molex_30P_Male_52465_Series-1nm	Molex_30P_Male_52465_Series-1nm	1	J1
+CONNECTOR_4	OutFacingBoardTypeB-1nm	OutFacingBoardTypeB-1nm	1	MP1
+DNF	SolderJumper	SolderJumperClosed-2nm	1	LK1
+DNF	TESTPOINT	Datumn_Small	1	G1

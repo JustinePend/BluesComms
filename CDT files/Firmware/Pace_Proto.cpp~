@@ -1,0 +1,515 @@
+#include "Particle.h"
+#define ARDUINO 101
+
+#include <stdio.h> // snprintf()
+#include "Debug_LED.h"
+#include "Communications.h"
+#include "DRV8830.h"
+#include "TopLevel_OLED.h"  
+#include "TopLevel_SDFAT.h"
+#include "TopLevel_RTC.h"
+#include "AT24_EEPROM.h"
+#include "TopLevel_MCP23017.h"
+#include "TopLevel_TCA9548.h"
+#include "TopLevel_BME680.h"
+#include "BleLogging.h"
+#include "Status_Indicator.h"
+
+#define ADuCM360_EN_PIN D8
+#define SHT31_nRST_PIN D6
+
+
+SYSTEM_MODE(MANUAL); // For BLE we don't need CLoud connectivity
+                        // Manual: Won't stay stuck trying to connect
+
+SYSTEM_THREAD(ENABLED);
+
+typedef enum {
+   POWER_ON = 0,
+   BASELINE = 1,
+   EXPOSURE = 2,
+   DRYING = 3,
+   POWER_OFF = 4,
+   FINISHED
+} enGSFET_Meas_State;
+
+enGSFET_Meas_State g_GS_Meas_State = POWER_ON;
+
+// Constants
+const unsigned long c_SEND_INTERVAL_MS = 2000;
+const size_t c_READ_BUF_SIZE = 127;
+const size_t c_OLED_LINE_CHARS_MAX = 23;
+const size_t c_MAX_FNAME_LEN = 40;
+const uint8_t g_kitNum = 1;
+uint8_t g_measCount = 0;
+
+// Forward declarations
+void setup();
+void loop();
+void clearSerialBuffer();
+void processButtonPressEvent();
+void processBuffer();
+
+void getSensorData();
+void timerEventHandler();
+void zeroSensorData();
+void selectExternalMeshAntenna();
+void readAnalogInputs();
+void read_BME680();
+enGSFET_Meas_State update_GSFET_Meas_State(enGSFET_Meas_State inState);
+
+// Global variables
+int g_counter = 100000;
+uint8_t g_debug_count = 0;
+unsigned long g_lastSend = 0;
+bool g_SD_Logging_Enable = true;
+bool g_ADuCM360_Meas_Enable = false;
+int g_AnalogValue = 0;
+uint16_t FET_Currents[8] = {50, 20, 30, 40, 50, 60, 400, 80};
+
+char g_readBuf[c_READ_BUF_SIZE];
+char g_dataLine[c_READ_BUF_SIZE];
+const char c_tapSeperator = '@'; 
+size_t g_readBufOffset = 0;
+
+char g_OLED_Line1[c_OLED_LINE_CHARS_MAX] = "";
+char g_OLED_Line2[c_OLED_LINE_CHARS_MAX] = "";
+char g_OLED_Line3[c_OLED_LINE_CHARS_MAX] = "";
+char emptyStr[] = "";
+
+bool g_BTN_A_PRESSED = false;
+bool g_BTN_B_PRESSED = false;
+bool g_BTN_C_PRESSED = false;
+
+char g_FName[c_MAX_FNAME_LEN] = "";
+
+BleLogging<4096> bleLogHandler(LOG_LEVEL_INFO);
+
+struct dataStruct{
+    float BME680_Temp;
+    float BME680_Hum;
+    float BME680_kOhms;
+    float BME680_Press_hPa;
+    float MainsDC_Volts;
+    float BAT1_Volts;
+    float BAT2_Volts;
+} sensorData;
+
+void setup() {
+    char ch = 0;
+    digitalWrite(ADuCM360_EN_PIN,LOW); 
+    pinMode(ADuCM360_EN_PIN, OUTPUT);
+    pinMode(A0, INPUT);
+    pinMode(A1, INPUT);
+    pinMode(A2, INPUT);
+
+    pinMode(D6, OUTPUT);
+    digitalWrite(D6,HIGH);
+
+    DBG_DebugLED_INIT(); 
+
+    UART_Init();
+    clearSerialBuffer();
+    OLED_setup();
+    OLED_graphicsTest();
+    RTC_Init();
+    RTC_GenDataFileName (g_FName, c_MAX_FNAME_LEN);
+
+    sprintf(g_dataLine,"# FW: 0.0.1");
+    SD_WriteData(g_dataLine, g_FName, TRUE);
+
+    sprintf(g_dataLine,"# Kit Number: %d",g_kitNum);
+    SD_WriteData(g_dataLine, g_FName, TRUE);
+
+    Serial.printlnf("%s",g_dataLine  );
+
+    TCA9548_Init();
+    MCP23017_setup();
+    SI_Init();
+
+    SI_cycle_RGY_Led_Colours();
+    SI_signal_All_LEDs(ORG, 1000);
+    delay(1000);
+    SI_signal_FET_Status(FET_Currents);
+    delay(1000);
+
+    ch = AT24_EEPROM_Get_Cartridge_Number();
+    Serial.print("Original Cartridge ID: ");
+    Serial.println(ch,DEC);
+    sprintf(g_dataLine,"# Cartridge Number: %d",ch);
+    SD_WriteData(g_dataLine, g_FName, TRUE);
+
+    AT24_EEPROM_Get_Unique_ID(g_readBuf, c_READ_BUF_SIZE);  
+    AT24_Gen_Unique_ID_Str(g_readBuf, g_dataLine, c_READ_BUF_SIZE);
+    strncpy(g_OLED_Line1, "# Cartridge Unique ID: ", c_OLED_LINE_CHARS_MAX);
+    SD_WriteData(g_OLED_Line1, g_FName, FALSE);
+    SD_WriteData(g_dataLine, g_FName, TRUE);
+
+    Serial.println();
+    Serial.print("EEPROM Unique ID: ");
+    Serial.println(g_dataLine);
+
+    TCA9548_setChannel(m_Pump_Valves);
+    DRV8830_Init();  
+
+    sprintf(g_OLED_Line1,"Cartridge Number: %d",ch);
+    strncpy(g_OLED_Line2, "Kit 1x FW: 0.0.1", c_OLED_LINE_CHARS_MAX);
+    strncpy(g_OLED_Line3, "CDT GAS SENSOR KIT", c_OLED_LINE_CHARS_MAX);
+    OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3);
+
+
+    delay(1000);
+    strncpy(g_OLED_Line3, "Audible P/V Test", c_OLED_LINE_CHARS_MAX);
+    OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3);
+
+    Audible_Valve_Test();
+
+    g_GS_Meas_State = update_GSFET_Meas_State(POWER_ON);
+    
+    DBG_PulseDebugLED(2,1);
+    delay(1000); // Allow some time for large caps on Pump/Valve to charge
+
+    BME680_Init();
+    DBG_PulseDebugLED(3,1);
+
+    //selectExternalMeshAntenna();
+    bleLogHandler.setup();
+    Serial.printlnf("FW VER: Pace_Proto_14Sep20");
+}
+
+void loop() {
+
+	// Read data from serial
+    bleLogHandler.loop();
+    //The receive buffer size for hardware serial channels (Serial1, Serial2) is 64 bytes and cannot be changed. 
+	while(Serial1.available()) {
+		if (g_readBufOffset < c_READ_BUF_SIZE) {
+			char c = Serial1.read();
+			if (c != '\n') {
+				// Add character to buffer
+				g_readBuf[g_readBufOffset++] = c;
+			}
+			else {
+				// End of line character found, process line
+                // Serial.printlnf("%d", g_readBufOffset);
+				g_readBuf[g_readBufOffset] = 0;
+				processBuffer();
+                g_GS_Meas_State = update_GSFET_Meas_State(g_GS_Meas_State);
+				g_readBufOffset = 0;
+			}
+		}
+		else {
+			Serial.println("g_readBuf overflow, emptying buffer");
+			g_readBufOffset = 0;
+		}// End If-Else
+	}// End While    
+    
+    OLED_CheckButtons(g_BTN_A_PRESSED, g_BTN_B_PRESSED, g_BTN_C_PRESSED);
+    processButtonPressEvent();
+    DBG_PulseDebugLED(4,1);
+
+    if(g_GS_Meas_State == FINISHED){
+        while(1){
+            DBG_PulseDebugLED(4,1);
+            delay(1000);
+        }
+        
+    }
+
+}// End Loop
+
+void processBuffer() {
+    uint32_t fileSize = 0;
+    static uint32_t measNum = 0;
+
+    Serial.printlnf("Received from ADuCM360: %s", g_readBuf);
+    RTC_GetTime (g_OLED_Line1, c_OLED_LINE_CHARS_MAX);
+
+    zeroSensorData();
+
+    read_BME680();
+    readAnalogInputs();
+
+    if(g_SD_Logging_Enable){
+            sprintf(g_dataLine,"%s\t%ld", g_OLED_Line1, measNum);
+            fileSize = SD_WriteData(g_dataLine, g_FName, FALSE);
+
+            sprintf(g_dataLine,"\t%s",g_readBuf);
+            fileSize = SD_WriteData(g_dataLine, g_FName, FALSE);
+
+            snprintf (g_OLED_Line2, c_OLED_LINE_CHARS_MAX, "SD FSize(B): %lu", fileSize);
+
+            sprintf(g_dataLine,"\t%f\t%f\t%f\t%f",
+                    sensorData.BME680_Temp,
+                    sensorData.BME680_Hum,                    
+                    sensorData.BME680_Press_hPa,
+                    sensorData.BME680_kOhms
+                );
+            Serial.print("#1[");
+            Serial.print(g_dataLine);
+            Serial.printlnf("]");
+            fileSize = SD_WriteData(g_dataLine, g_FName, FALSE);
+
+            sprintf(g_dataLine,"\t%f\t%f\t%f",
+                    sensorData.MainsDC_Volts,
+                    sensorData.BAT1_Volts,
+                    sensorData.BAT2_Volts
+                );
+            Serial.print("#2[");
+            Serial.print(g_dataLine);
+            Serial.printlnf("]");
+            fileSize = SD_WriteData(g_dataLine, g_FName, TRUE);
+
+            measNum++;
+    } 
+
+    char subbuff[7];
+    memcpy( subbuff, &g_readBuf[7], 6 );// 6 digits + '\t' -> Ch2 start index = 7
+    subbuff[6] = '\0';
+
+
+    strncpy(g_OLED_Line3, "Ch2 (pA): ",12);
+    strncat(g_OLED_Line3, subbuff,6);
+
+    OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3);
+    Log.printf("\n\n%s\n",g_OLED_Line1);
+    Log.printf("Meas Num %ld\n",measNum);
+    Log.printf("%s\n",g_readBuf);
+    Log.printf("SD FSize %ld\n",fileSize);
+    Log.printf("BT %3.2f\n",sensorData.BME680_Temp);
+    Log.printf("BRH %3.2f\n",sensorData.BME680_Hum);
+    Log.printf("BP %3.2f\n",sensorData.BME680_Press_hPa);
+    Log.printf("BR %3.2f\n",sensorData.BME680_kOhms);
+    Log.printf("V1 %3.2f\n",sensorData.BAT1_Volts);
+    
+    DBG_PulseDebugLED(3,1);
+
+}
+
+void processButtonPressEvent(){
+    // Note when debugging if delays are slowing down main loop
+    // you may need to keep the buttons pressed down for a few seconds
+    // as they are only polled once per main loop cycle
+    if(g_BTN_A_PRESSED){
+        RTC_GetTime (g_OLED_Line1, c_OLED_LINE_CHARS_MAX);
+        read_BME680();
+        readAnalogInputs();
+        snprintf (g_OLED_Line2, c_OLED_LINE_CHARS_MAX, "BV/P %3.2f %3.2f", 
+                sensorData.BAT1_Volts,
+                sensorData.BME680_Press_hPa
+            );
+        Serial.printlnf("%s",g_OLED_Line2);
+        snprintf (g_OLED_Line3, c_OLED_LINE_CHARS_MAX, "B %3.2f %3.2f %3.2f", 
+                sensorData.BME680_Temp,
+                sensorData.BME680_Hum,
+                sensorData.BME680_kOhms                
+            );
+        Serial.printlnf("%s",g_OLED_Line3);
+        OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3);
+    }
+
+    if(g_BTN_B_PRESSED){
+        if(g_SD_Logging_Enable){
+            g_SD_Logging_Enable = false;
+            strncpy(g_OLED_Line2, "SD LOGGING STOPPED", c_OLED_LINE_CHARS_MAX);
+            OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, emptyStr);
+        }
+        else{
+            g_SD_Logging_Enable = true;
+            strncpy(g_OLED_Line2, "SD LOGGING ENABLED", c_OLED_LINE_CHARS_MAX);
+            OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, emptyStr);
+        }
+    }
+
+   if(g_BTN_C_PRESSED){
+            OLED_OneLongString(g_readBuf);
+    }
+
+}
+
+void clearSerialBuffer(){
+    while(Serial1.available()) 		
+			Serial1.read();
+}
+
+void readAnalogInputs()
+{
+    // 6.xyz: Calibration value determined by measuring with DMM 
+    g_AnalogValue = analogRead(A0);
+    sensorData.MainsDC_Volts = (((((float)g_AnalogValue) * 3.3) / 4095) * 6.112);
+    g_AnalogValue = analogRead(A1);
+    sensorData.BAT1_Volts = (((((float)g_AnalogValue) * 3.3) / 4095) * 6.112);
+    g_AnalogValue = analogRead(A2);
+    sensorData.BAT2_Volts = (((((float)g_AnalogValue) * 3.3) / 4095) * 6.112);
+
+    Serial.print("SMPS (V): ");
+    Serial.print(sensorData.MainsDC_Volts);
+    Serial.print(" ");
+    Serial.print(sensorData.BAT1_Volts);
+    Serial.print(" ");
+    Serial.println(sensorData.BAT2_Volts);
+}
+
+
+
+void getSensorData(){   
+    read_BME680();
+    readAnalogInputs();
+}// End Function
+
+void zeroSensorData(){
+    sensorData.BME680_Hum = 0;
+    sensorData.BME680_kOhms = 0;
+    sensorData.BME680_Press_hPa = 0;
+    sensorData.BME680_Temp = 0;
+    sensorData.MainsDC_Volts = 0;
+    sensorData.BAT1_Volts = 0;
+    sensorData.BAT2_Volts = 0;
+}
+
+void selectExternalMeshAntenna() {
+
+#if (PLATFORM_ID == PLATFORM_ARGON)
+    digitalWrite(ANTSW1, 1);
+    digitalWrite(ANTSW2, 0);
+#elif (PLATFORM_ID == PLATFORM_BORON)
+    digitalWrite(ANTSW1, 0);
+#else
+    digitalWrite(ANTSW1, 0);
+    digitalWrite(ANTSW2, 1);
+#endif
+}
+
+enGSFET_Meas_State update_GSFET_Meas_State(enGSFET_Meas_State inState){
+    static uint8_t inStateCount = 0;
+    static uint8_t cyclesCompleted = 0;
+    enGSFET_Meas_State outState;
+
+    outState = inState; // Default 
+
+    switch(inState){
+        case POWER_ON: 
+            TCA9548_setChannel(m_Pump_Valves);
+            delay(10000); // After power up allow time for caps to charge
+            DRV8830_Set_All_Valves(PORTB, PORTB, PORTB);
+            delay(5000);
+            DRV8830_Set_Pump(5000,FWD);
+            RTC_GetTime (g_OLED_Line1, c_OLED_LINE_CHARS_MAX);
+            sprintf(g_dataLine,"# %s POWER_ON; PUMP ON; BBB",g_OLED_Line1);
+            SD_WriteData(g_dataLine, g_FName, TRUE);  
+            strncpy(g_OLED_Line3, "PUMP ON BBB", c_OLED_LINE_CHARS_MAX);
+            OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3);          
+            outState = BASELINE;            
+            break;
+        case BASELINE:
+            if(inStateCount == 0)
+            {
+                TCA9548_setChannel(m_Pump_Valves);
+                DRV8830_Set_All_Valves(PORTB, PORTB, PORTB);
+                RTC_GetTime (g_OLED_Line1, c_OLED_LINE_CHARS_MAX);
+                sprintf(g_dataLine,"# %s BASELINE BBB",g_OLED_Line1);
+                SD_WriteData(g_dataLine, g_FName, TRUE);
+                strncpy(g_OLED_Line3, "BASELINE BBB", c_OLED_LINE_CHARS_MAX);
+                OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3); 
+            }
+            inStateCount++;
+            if(inStateCount>89) //89: 45 min elapsed
+            {
+                inStateCount = 0;
+                outState = EXPOSURE;
+            }
+            break;
+        case EXPOSURE:
+            if(inStateCount == 0)
+            {
+                TCA9548_setChannel(m_Pump_Valves);
+                DRV8830_Set_All_Valves(PORTA, PORTB, PORTB);
+                RTC_GetTime (g_OLED_Line1, c_OLED_LINE_CHARS_MAX);
+                sprintf(g_dataLine,"# %s EXPOSURE ABB",g_OLED_Line1);
+                SD_WriteData(g_dataLine, g_FName, TRUE);
+                strncpy(g_OLED_Line3, "EXPOSURE ABB", c_OLED_LINE_CHARS_MAX);
+                OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3); 
+            }
+            inStateCount++;
+            if(inStateCount>29) //0-29: 15 min elapsed
+            {
+                inStateCount = 0;
+                cyclesCompleted++;
+                if(cyclesCompleted>11)//0-23: 24 Cycles Completed
+                {
+                    outState = DRYING;
+                }
+                else
+                {
+                    outState = BASELINE;
+                }                
+            }
+            break;
+        case DRYING:
+            if(inStateCount == 0)
+            {
+                TCA9548_setChannel(m_Pump_Valves);
+                DRV8830_Set_All_Valves(PORTB, PORTA, PORTA);
+                RTC_GetTime (g_OLED_Line1, c_OLED_LINE_CHARS_MAX);
+                sprintf(g_dataLine,"# %s DRYING BAA",g_OLED_Line1);
+                SD_WriteData(g_dataLine, g_FName, TRUE);
+                strncpy(g_OLED_Line3, "DRYING BAA", c_OLED_LINE_CHARS_MAX);
+                OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3); 
+            }
+            inStateCount++;
+            if(inStateCount>59) //0-59: 30 min elapsed
+            {
+                inStateCount = 0;
+                outState = POWER_OFF;
+            } 
+            break;
+        case POWER_OFF:
+            TCA9548_setChannel(m_Pump_Valves);
+            DRV8830_Set_Pump(0,FWD);
+            delay(1000);
+            DRV8830_Set_All_Valves(PORTB, PORTA, PORTA);
+            RTC_GetTime (g_OLED_Line1, c_OLED_LINE_CHARS_MAX);
+            sprintf(g_dataLine,"# %s POWER_OFF BAA",g_OLED_Line1);
+            SD_WriteData(g_dataLine, g_FName, TRUE);
+            strncpy(g_OLED_Line3, "POWER-OFF BAA", c_OLED_LINE_CHARS_MAX);
+            OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3); 
+            inStateCount = 0;
+            outState = FINISHED;
+            break;
+        case FINISHED:
+            outState = FINISHED;
+            RTC_GetTime (g_OLED_Line1, c_OLED_LINE_CHARS_MAX);
+            sprintf(g_dataLine,"# %s 1-MCP MEAS FINISHED",g_OLED_Line1);
+            SD_WriteData(g_dataLine, g_FName, TRUE);
+            strncpy(g_OLED_Line3, "FINISHED", c_OLED_LINE_CHARS_MAX);
+            OLED_UpdateDisplay(g_OLED_Line1, g_OLED_Line2, g_OLED_Line3); 
+        default:
+            outState = FINISHED;
+    }
+    sprintf (g_dataLine, "GSFET_MS:\t%d\t%d\t%d\t%d", 
+                inState,
+                outState,
+                inStateCount,
+                cyclesCompleted                
+            );
+        Serial.printlnf("%s",g_dataLine);
+    return(outState); 
+}
+
+void read_BME680()
+{
+    BME680_UpdateData();
+    sensorData.BME680_Temp = bme.temperature;
+    sensorData.BME680_Press_hPa = bme.pressure / 100.0;
+    sensorData.BME680_Hum = bme.humidity;
+    sensorData.BME680_kOhms = bme.gas_resistance / 1000.0;
+
+    Serial.print("BME680: ");
+    Serial.print(sensorData.BME680_Temp);
+    Serial.print(" ");
+    Serial.print(sensorData.BME680_Hum);
+    Serial.print(" ");
+    Serial.print(sensorData.BME680_Press_hPa);
+    Serial.print(" ");
+    Serial.println(sensorData.BME680_kOhms);
+}

@@ -1,0 +1,8 @@
+v0_0: Adapter which connects to Analog Devices CN0357 Eval Board (only 4x available from Digikey).
+Adds power switch + Micromatch header.
+This option provides for testing integration with the Boron Systsem controller. 
+4x 2Layer Boards delivered.
+
+v1_0: Standalone Analog Front End + ADC + power switch etc.
+This option provides for buiding larger numbers of units (>4).
+12x 4-Layer Boards + Stencil due 6 Jul 20.

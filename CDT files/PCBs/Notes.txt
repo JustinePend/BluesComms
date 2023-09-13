@@ -1,0 +1,2 @@
+Gerber Manufacturing Files are included in each folder in an archived file.
+Extension is .7z (and in a few cases .zip)
